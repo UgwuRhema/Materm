@@ -1,11 +1,13 @@
 #include <SDL2/SDL_error.h>
 #include <SDL2/SDL_events.h>
+#include <SDL2/SDL_keyboard.h>
 #include <SDL2/SDL_render.h>
 #include <SDL2/SDL_timer.h>
 #include <SDL2/SDL_video.h>
 #include <stdio.h>
 #include <SDL2/SDL.h>
 #include <stdbool.h>
+#include <string.h>
 
 /*constants*/
 #define WINDOW_WIDTH 800
@@ -37,6 +39,10 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
         return 1;
     }
+    #define MAX_INPUT 1024
+    SDL_StartTextInput(); /*start tetx input*/
+    char buffer[MAX_INPUT] = "";
+    size_t len = 0;
     /*lets's make the window stay open till we press quit*/
     bool running = true;
     while (running)
@@ -46,11 +52,22 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         {
             if (e.type == SDL_QUIT)
                 running = false;
+            if (e.type == SDL_TEXTINPUT)
+            {
+                size_t add = strlen(e.text.text);
+                if (len + add < MAX_INPUT)
+                {
+                    memcpy(buffer + len, e.text.text, add + 1); /*copies the '\0' too*/
+                    len += add;
+                }
+            }
         }
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         SDL_RenderPresent(renderer);/*surely this makes it black*/
     }
+    SDL_StopTextInput();
+    SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
