@@ -12,7 +12,7 @@
 int main(int argc, char *argv[])
 {
     SDL_Window *window = NULL;
-    /*initialize window subsystem*/
+    /*initialize window video subsystem*/
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
