@@ -14,6 +14,8 @@
 #include <limits.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 /*append a string to a bounded buffer*/
 static void ps1_append(char *out, size_t outsz, size_t *len, const char *s)
@@ -47,7 +49,6 @@ static void expand_ps1(const char *raw, char *out, size_t outsz)
     size_t o = 0;
     char tmp[PATH_MAX];
     out[0] = '\0';
-
     for (size_t i = 0; raw[i]; i++)
     {
         if (raw[i] == '\033') /*actual ESC*/
@@ -61,7 +62,6 @@ static void expand_ps1(const char *raw, char *out, size_t outsz)
             ps1_append(out, outsz, &o, s);
             continue;
         }
-
         char c = raw[++i];
         if (!c)
             break;
@@ -186,6 +186,72 @@ static size_t utf8_next(const char *s, size_t len, size_t pos)
     return pos;
 }
 
+/*append text to the scrollback buffer*/
+static void output_append(char *out, size_t outsz, size_t *len, const char *s)
+{
+    size_t n = strlen(s);
+    if (n >= outsz - 1)
+    {
+        memcpy(out, s + n - (outsz - 1), outsz - 1);
+        out[outsz - 1] = '\0';
+        *len = outsz - 1;
+        return;
+    }
+    if (*len + n > outsz - 1)
+    {
+        size_t drop = *len + n - (outsz - 1);
+        memmove(out, out + drop, *len - drop);
+        *len -= drop;
+    }
+    memcpy(out + *len, s, n);
+    *len += n;
+    out[*len] = '\0';
+}
+
+/*run a command with bash and capture stdout+stderr*/
+static int run_command(const char *cmd, char *out, size_t outsz)
+{
+    int fds[2];
+    if (pipe(fds) != 0)
+        return -1;
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (pid == 0)
+    {
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        execl("/bin/bash", "bash", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    size_t total = 0;
+    char tmp[4096];
+    ssize_t n;
+    while ((n = read(fds[0], tmp, sizeof tmp)) > 0)
+    {
+        size_t copy = (size_t)n;
+        if (total + copy > outsz - 1)
+            copy = outsz - 1 - total;
+        if (copy > 0)
+        {
+            memcpy(out + total, tmp, copy);
+            total += copy;
+        }
+    }
+    out[total] = '\0';
+    close(fds[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
 /*constants*/
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
@@ -193,8 +259,7 @@ static size_t utf8_next(const char *s, size_t len, size_t pos)
 #define FONT_PATH "/usr/share/fonts/jetbrains-mono/JetBrainsMonoNL-Medium.ttf"
 #define FONT_SIZE 14
 #define INPUT_MAX 1024
-#define MAX_HISTORY 100
-#define HISTORY_LINE (INPUT_MAX + 512)
+#define OUTPUT_MAX 65536
 
 int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 {
@@ -240,8 +305,8 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
     char buffer[INPUT_MAX] = "";
     size_t len = 0;
     size_t cursor = 0; /*byte offset into buffer*/
-    char history[MAX_HISTORY][HISTORY_LINE];
-    int history_count = 0;
+    static char output[OUTPUT_MAX] = "";
+    size_t output_len = 0;
     /*first of all let me get my PS1*/
     const char *raw_ps1 = getenv("PS1");
     if (!raw_ps1)
@@ -306,15 +371,21 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
                     break;
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER:
-                    /*commit the line to the scrollback and start a new one*/
-                    if (history_count < MAX_HISTORY)
-                        history_count++;
-                    else
+                    /*execute the line with bash and show its output*/
+                    if (len > 0)
                     {
-                        memmove(history[0], history[1], sizeof history[0] * (MAX_HISTORY - 1));
-                        history_count = MAX_HISTORY;
+                        char cmd[INPUT_MAX];
+                        memcpy(cmd, buffer, len);
+                        cmd[len] = '\0';
+                        output_append(output, sizeof output, &output_len, ps1);
+                        output_append(output, sizeof output, &output_len, cmd);
+                        output_append(output, sizeof output, &output_len, "\n");
+                        static char result[OUTPUT_MAX];
+                        run_command(cmd, result, sizeof result);
+                        output_append(output, sizeof output, &output_len, result);
+                        if (result[0] && result[strlen(result) - 1] != '\n')
+                            output_append(output, sizeof output, &output_len, "\n");
                     }
-                    snprintf(history[history_count - 1], sizeof history[0], "%s%s", ps1, buffer);
                     buffer[0] = '\0';
                     len = 0;
                     cursor = 0;
@@ -326,34 +397,48 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         SDL_RenderClear(renderer);/*surely this makes it black*/
         SDL_Color white = {255, 255, 255, 255};
         int line_skip = TTF_FontLineSkip(font);
-        int y = 8;
-        /*draw the committed lines above the input*/
-        for (int i = 0; i < history_count; i++)
+        int margin = 8;
+        int win_w = 0, win_h = 0;
+        SDL_GetWindowSize(window, &win_w, &win_h);
+        /*draw the command output, wrapped and anchored to the bottom*/
+        if (output_len > 0)
         {
-            SDL_Surface *text = TTF_RenderText_Blended(font, history[i], white);
+            SDL_Surface *text = TTF_RenderUTF8_Blended_Wrapped(font, output, white, win_w - 2 * margin);
             if (text)
             {
                 SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
                 if (texture)
                 {
-                    SDL_Rect dst = {8, y, text->w, text->h};
-                    SDL_RenderCopy(renderer, texture, NULL, &dst);
+                    int avail = win_h - line_skip - 2 * margin;
+                    if (avail < 0)
+                        avail = 0;
+                    SDL_Rect src = {0, 0, text->w, text->h};
+                    SDL_Rect dst = {margin, margin, text->w, text->h};
+                    if (text->h > avail)
+                    {
+                        src.y = text->h - avail;
+                        src.h = avail;
+                        dst.h = avail;
+                    }
+                    SDL_RenderCopy(renderer, texture, &src, &dst);
                     SDL_DestroyTexture(texture);
                 }
                 SDL_FreeSurface(text);
             }
-            y += line_skip;
         }
-        /*build the current line: prompt followed by what we typed*/
+        /*current input line pinned to the bottom*/
+        int input_y = win_h - line_skip - margin;
+        if (input_y < margin)
+            input_y = margin;
         char line[INPUT_MAX + 512];
         snprintf(line, sizeof(line), "%s%s", ps1, buffer);
-        SDL_Surface *text = TTF_RenderText_Blended(font, line, white);
+        SDL_Surface *text = TTF_RenderUTF8_Blended(font, line, white);
         if (text)
         {
             SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
             if (texture)
             {
-                SDL_Rect dst = {8, y, text->w, text->h};
+                SDL_Rect dst = {margin, input_y, text->w, text->h};
                 SDL_RenderCopy(renderer, texture, NULL, &dst);
                 SDL_DestroyTexture(texture);
             }
@@ -367,7 +452,7 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
             TTF_SizeText(font, "M", &cell_w, &cell_h) == 0 &&
             (SDL_GetTicks() / 500) % 2 == 0)
         {
-            SDL_Rect cursor_rect = {8 + before_w, y, cell_w, TTF_FontHeight(font)};
+            SDL_Rect cursor_rect = {margin + before_w, input_y, cell_w, TTF_FontHeight(font)};
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
             SDL_RenderFillRect(renderer, &cursor_rect);
         }
