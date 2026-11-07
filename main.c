@@ -15,6 +15,8 @@
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 #define WINDOW_DELAY 3000
+#define FONT_PATH "/usr/share/fonts/jetbrains-mono/JetBrainsMonoNL-Medium.ttf"
+#define FONT_SIZE 14
 
 int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 {
@@ -44,22 +46,27 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 		SDL_Quit();
 		return 1;
     }
-	if (TTF_Init() == -1)
-	{
-		fprintf(stderr, "Failed to initialize TTF\n");
-		SDL_DestroyRenderer(renderer);
-		SDL_DestroyWindow(window);
-		SDL_Quit();
-		return 1;
-	}
-	TTF_Font *font = TTF_OpenFont("JetBrainsMonoNL-Medium.ttf", 13);
     #define MAX_INPUT 1024
+    /*initialize font rendering*/
+    if (TTF_Init() != 0)
+    {
+        fprintf(stderr, "TTF Failed to initialize: %s\n", TTF_GetError());
+        return 1;
+    }
+    TTF_Font *font = TTF_OpenFont(FONT_PATH, FONT_SIZE);
+    if (!font)
+    {
+        fprintf(stderr, "Failed to open font '%s': %s\n", FONT_PATH, TTF_GetError());
+        return 1;
+    }
     SDL_StartTextInput(); /*start tetx input*/
     char buffer[MAX_INPUT] = "";
     size_t len = 0;
     /*first of all let me get my PS1*/
-	char *ps1 = getenv("PS1");
-	/*lets's make the window stay open till we press quit*/
+    const char *ps1 = getenv("PS1");
+    if (!ps1)
+        ps1 = "$ "; /*PS1 is a shell variable, so it usually isn't exported*/
+    /*lets's make the window stay open till we press quit*/
     bool running = true;
     while (running)
     {
@@ -79,10 +86,28 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
             }
         }
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-        SDL_RenderPresent(renderer);/*surely this makes it black*/
+        SDL_RenderClear(renderer);/*surely this makes it black*/
+        /*build the line to draw: prompt followed by what we typed*/
+        char line[MAX_INPUT + 256];
+        snprintf(line, sizeof(line), "%s%s", ps1, buffer);
+        SDL_Color white = {255, 255, 255, 255};
+        SDL_Surface *text = TTF_RenderText_Blended(font, line, white);
+        if (text)
+        {
+            SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
+            if (texture)
+            {
+                SDL_Rect dst = {8, 8, text->w, text->h};
+                SDL_RenderCopy(renderer, texture, NULL, &dst);
+                SDL_DestroyTexture(texture);
+            }
+            SDL_FreeSurface(text);
+        }
+        SDL_RenderPresent(renderer);
     }
     SDL_StopTextInput();
+    TTF_CloseFont(font);
+    TTF_Quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
