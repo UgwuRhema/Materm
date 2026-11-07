@@ -5,7 +5,7 @@
 #include <SDL2/SDL.h>
 
 /*constants*/
-#define WINDOW_WIDTH 400
+#define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 #define WINDOW_DELAY 3000
 
