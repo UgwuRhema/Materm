@@ -4,7 +4,7 @@ SRC := ./main.c
 OUT := ./materm
 
 all: $(SRC)
-	cc $(CFLAGS) -o $(OUT) $(SRC) -lSDL2
+	cc $(CFLAGS) -o $(OUT) $(SRC) -lSDL2 -lSDL2_ttf
 
 run:
 	$(OUT)
