@@ -26,7 +26,7 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
     /*create a centered window*/
     window = SDL_CreateWindow("Materm", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH,
                               WINDOW_HEIGHT,
-                              0);
+                              SDL_WINDOW_RESIZABLE);
     if (!window)
     {
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
