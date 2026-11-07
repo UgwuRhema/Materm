@@ -1,5 +1,6 @@
 #include <SDL2/SDL_error.h>
 #include <SDL2/SDL_events.h>
+#include <SDL2/SDL_render.h>
 #include <SDL2/SDL_timer.h>
 #include <SDL2/SDL_video.h>
 #include <stdio.h>
@@ -25,6 +26,13 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
                               WINDOW_HEIGHT,
                               0);
     if (!window)
+    {
+        fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
+        return 1;
+    }
+    /*let's create the renderer*/
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer)
     {
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
         return 1;
