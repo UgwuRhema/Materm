@@ -9,7 +9,7 @@
 #define WINDOW_HEIGHT 600
 #define WINDOW_DELAY 3000
 
-int main(int argc, char *argv[])
+int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 {
     SDL_Window *window = NULL;
     /*initialize window video subsystem*/
@@ -27,6 +27,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
         return 1;
     }
+    /*Make is open for 3 seconds for now*/
     SDL_Delay(WINDOW_DELAY);
     SDL_DestroyWindow(window);
     SDL_Quit();
