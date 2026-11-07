@@ -1,8 +1,10 @@
 #include <SDL2/SDL_error.h>
+#include <SDL2/SDL_events.h>
 #include <SDL2/SDL_timer.h>
 #include <SDL2/SDL_video.h>
 #include <stdio.h>
 #include <SDL2/SDL.h>
+#include <stdbool.h>
 
 /*constants*/
 #define WINDOW_WIDTH 800
@@ -27,8 +29,17 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
         return 1;
     }
-    /*Make is open for 3 seconds for now*/
-    SDL_Delay(WINDOW_DELAY);
+    /*lets's make the window stay open till we press quit*/
+    bool running = true;
+    while (running)
+    {
+        SDL_Event e;
+        while (SDL_PollEvent(&e) > 0)
+        {
+            if (e.type == SDL_QUIT)
+                running = false;
+        }
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
