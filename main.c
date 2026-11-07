@@ -49,6 +49,7 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         }
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);/*surely this makes it black*/
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
