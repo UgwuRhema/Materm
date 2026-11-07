@@ -37,6 +37,8 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         fprintf(stderr, "SDL Failed to initialize: %s\n", SDL_GetError());
         return 1;
     }
+    if (SDL_RenderClear(renderer) != 0)
+        fprintf(stderr, "SDL Failed to Clear: %s\n", SDL_GetError());
     /*lets's make the window stay open till we press quit*/
     bool running = true;
     while (running)
