@@ -164,12 +164,37 @@ static void expand_ps1(const char *raw, char *out, size_t outsz)
     }
 }
 
+/*move to the start of the previous UTF-8 character*/
+static size_t utf8_prev(const char *s, size_t pos)
+{
+    if (pos == 0)
+        return 0;
+    pos--;
+    while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
+        pos--;
+    return pos;
+}
+
+/*move past the UTF-8 character starting at pos*/
+static size_t utf8_next(const char *s, size_t len, size_t pos)
+{
+    if (pos >= len)
+        return len;
+    pos++;
+    while (pos < len && ((unsigned char)s[pos] & 0xC0) == 0x80)
+        pos++;
+    return pos;
+}
+
 /*constants*/
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 #define WINDOW_DELAY 3000
 #define FONT_PATH "/usr/share/fonts/jetbrains-mono/JetBrainsMonoNL-Medium.ttf"
 #define FONT_SIZE 14
+#define INPUT_MAX 1024
+#define MAX_HISTORY 100
+#define HISTORY_LINE (INPUT_MAX + 512)
 
 int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 {
@@ -199,7 +224,6 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
 		SDL_Quit();
 		return 1;
     }
-    #define INPUT_MAX 1024
     /*initialize font rendering*/
     if (TTF_Init() != 0)
     {
@@ -215,6 +239,9 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
     SDL_StartTextInput(); /*start tetx input*/
     char buffer[INPUT_MAX] = "";
     size_t len = 0;
+    size_t cursor = 0; /*byte offset into buffer*/
+    char history[MAX_HISTORY][HISTORY_LINE];
+    int history_count = 0;
     /*first of all let me get my PS1*/
     const char *raw_ps1 = getenv("PS1");
     if (!raw_ps1)
@@ -230,43 +257,119 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         {
             if (e.type == SDL_QUIT)
                 running = false;
-            if (e.type == SDL_TEXTINPUT)
+            else if (e.type == SDL_TEXTINPUT)
             {
                 size_t add = strlen(e.text.text);
                 if (len + add < INPUT_MAX)
                 {
-                    memcpy(buffer + len, e.text.text, add + 1); /*copies the '\0' too*/
+                    /*insert at the cursor, not always at the end*/
+                    memmove(buffer + cursor + add, buffer + cursor, len - cursor + 1);
+                    memcpy(buffer + cursor, e.text.text, add);
                     len += add;
+                    cursor += add;
+                }
+            }
+            else if (e.type == SDL_KEYDOWN)
+            {
+                switch (e.key.keysym.sym)
+                {
+                case SDLK_BACKSPACE:
+                    if (cursor > 0)
+                    {
+                        size_t start = utf8_prev(buffer, cursor);
+                        size_t n = cursor - start;
+                        memmove(buffer + start, buffer + cursor, len - cursor + 1);
+                        len -= n;
+                        cursor = start;
+                    }
+                    break;
+                case SDLK_DELETE:
+                    if (cursor < len)
+                    {
+                        size_t end = utf8_next(buffer, len, cursor);
+                        size_t n = end - cursor;
+                        memmove(buffer + cursor, buffer + end, len - end + 1);
+                        len -= n;
+                    }
+                    break;
+                case SDLK_LEFT:
+                    cursor = utf8_prev(buffer, cursor);
+                    break;
+                case SDLK_RIGHT:
+                    cursor = utf8_next(buffer, len, cursor);
+                    break;
+                case SDLK_HOME:
+                    cursor = 0;
+                    break;
+                case SDLK_END:
+                    cursor = len;
+                    break;
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                    /*commit the line to the scrollback and start a new one*/
+                    if (history_count < MAX_HISTORY)
+                        history_count++;
+                    else
+                    {
+                        memmove(history[0], history[1], sizeof history[0] * (MAX_HISTORY - 1));
+                        history_count = MAX_HISTORY;
+                    }
+                    snprintf(history[history_count - 1], sizeof history[0], "%s%s", ps1, buffer);
+                    buffer[0] = '\0';
+                    len = 0;
+                    cursor = 0;
+                    break;
                 }
             }
         }
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);/*surely this makes it black*/
-        /*build the line to draw: prompt followed by what we typed*/
-        char line[INPUT_MAX + 256];
-        snprintf(line, sizeof(line), "%s%s", ps1, buffer);
         SDL_Color white = {255, 255, 255, 255};
+        int line_skip = TTF_FontLineSkip(font);
+        int y = 8;
+        /*draw the committed lines above the input*/
+        for (int i = 0; i < history_count; i++)
+        {
+            SDL_Surface *text = TTF_RenderText_Blended(font, history[i], white);
+            if (text)
+            {
+                SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
+                if (texture)
+                {
+                    SDL_Rect dst = {8, y, text->w, text->h};
+                    SDL_RenderCopy(renderer, texture, NULL, &dst);
+                    SDL_DestroyTexture(texture);
+                }
+                SDL_FreeSurface(text);
+            }
+            y += line_skip;
+        }
+        /*build the current line: prompt followed by what we typed*/
+        char line[INPUT_MAX + 512];
+        snprintf(line, sizeof(line), "%s%s", ps1, buffer);
         SDL_Surface *text = TTF_RenderText_Blended(font, line, white);
         if (text)
         {
             SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
             if (texture)
             {
-                SDL_Rect dst = {8, 8, text->w, text->h};
+                SDL_Rect dst = {8, y, text->w, text->h};
                 SDL_RenderCopy(renderer, texture, NULL, &dst);
                 SDL_DestroyTexture(texture);
             }
             SDL_FreeSurface(text);
         }
-        /*blinking block cursor right after the text*/
-        int line_w = 0, line_h = 0, cell_w = 0, cell_h = 0;
-        if (TTF_SizeText(font, line, &line_w, &line_h) == 0 &&
+        /*blinking block cursor at the editing position*/
+        char before[INPUT_MAX + 512];
+        snprintf(before, sizeof before, "%s%.*s", ps1, (int)cursor, buffer);
+        int before_w = 0, before_h = 0, cell_w = 0, cell_h = 0;
+        if (TTF_SizeText(font, before, &before_w, &before_h) == 0 &&
             TTF_SizeText(font, "M", &cell_w, &cell_h) == 0 &&
             (SDL_GetTicks() / 500) % 2 == 0)
         {
-            SDL_Rect cursor = {8 + line_w, 8, cell_w, TTF_FontHeight(font)};
+            SDL_Rect cursor_rect = {8 + before_w, y, cell_w, TTF_FontHeight(font)};
             SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL_RenderFillRect(renderer, &cursor);
+            SDL_RenderFillRect(renderer, &cursor_rect);
         }
         SDL_RenderPresent(renderer);
     }
