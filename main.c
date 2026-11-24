@@ -400,7 +400,8 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         int margin = 8;
         int win_w = 0, win_h = 0;
         SDL_GetWindowSize(window, &win_w, &win_h);
-        /*draw the command output, wrapped and anchored to the bottom*/
+        /*draw the command output from the top, keeping the newest lines visible*/
+        int input_y = margin;
         if (output_len > 0)
         {
             SDL_Surface *text = TTF_RenderUTF8_Blended_Wrapped(font, output, white, win_w - 2 * margin);
@@ -421,15 +422,13 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
                         dst.h = avail;
                     }
                     SDL_RenderCopy(renderer, texture, &src, &dst);
+                    input_y = dst.y + dst.h;
                     SDL_DestroyTexture(texture);
                 }
                 SDL_FreeSurface(text);
             }
         }
-        /*current input line pinned to the bottom*/
-        int input_y = win_h - line_skip - margin;
-        if (input_y < margin)
-            input_y = margin;
+        /*current input line flows right after the output*/
         char line[INPUT_MAX + 512];
         snprintf(line, sizeof(line), "%s%s", ps1, buffer);
         SDL_Surface *text = TTF_RenderUTF8_Blended(font, line, white);
