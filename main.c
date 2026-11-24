@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <SDL2/SDL.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 #include <limits.h>
 #include <time.h>
@@ -195,13 +196,75 @@ static size_t utf8_next(const char *s, size_t len, size_t pos)
     return pos;
 }
 
+#define ANSI_DEFAULT_FG 0xFFFFFFu
+#define ANSI_DEFAULT_BG 0x000000u
+
+/*the usual 16 ANSI colors, picked to stay readable on black*/
+static uint32_t ansi_palette_color(int index)
+{
+    static const uint32_t colors[16] = {
+        0x555555, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xDCDFE4,
+        0x7F848E, 0xFF7B86, 0xB5E890, 0xFFD68A, 0x7CC4FF, 0xE29BF0, 0x7FE3F0, 0xFFFFFF};
+    if (index < 0 || index > 15)
+        return ANSI_DEFAULT_FG;
+    return colors[index];
+}
+
+static uint32_t ansi_256_color(int index)
+{
+    if (index < 0)
+        index = 0;
+    if (index < 16)
+        return ansi_palette_color(index);
+    if (index < 232)
+    {
+        static const int levels[6] = {0, 95, 135, 175, 215, 255};
+        index -= 16;
+        int r = levels[index / 36];
+        int g = levels[(index % 36) / 6];
+        int b = levels[index % 6];
+        return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+    int v = 8 + (index - 232) * 10;
+    if (v > 255)
+        v = 255;
+    return ((uint32_t)v << 16) | ((uint32_t)v << 8) | (uint32_t)v;
+}
+
+static uint32_t ansi_rgb_color(int r, int g, int b)
+{
+    if (r < 0)
+        r = 0;
+    if (r > 255)
+        r = 255;
+    if (g < 0)
+        g = 0;
+    if (g > 255)
+        g = 255;
+    if (b < 0)
+        b = 0;
+    if (b > 255)
+        b = 255;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static SDL_Color output_color(uint32_t rgb)
+{
+    SDL_Color c = {(Uint8)((rgb >> 16) & 0xFF), (Uint8)((rgb >> 8) & 0xFF), (Uint8)(rgb & 0xFF), 255};
+    return c;
+}
+
 /*a text screen with a write cursor, so control sequences can move around*/
 typedef struct
 {
     char data[OUTPUT_MAX];
+    uint32_t fg[OUTPUT_MAX];
+    uint32_t bg[OUTPUT_MAX];
     size_t len;
     size_t pos;
     size_t saved_pos;
+    uint32_t fg_color;
+    uint32_t bg_color;
 } OutputBuffer;
 
 /*throw away the oldest text when the buffer is full*/
@@ -209,8 +272,11 @@ static void output_drop_front(OutputBuffer *out, size_t drop)
 {
     if (drop > out->len)
         drop = out->len;
-    memmove(out->data, out->data + drop, out->len - drop + 1);
-    out->len -= drop;
+    size_t left = out->len - drop;
+    memmove(out->data, out->data + drop, left + 1);
+    memmove(out->fg, out->fg + drop, left * sizeof(uint32_t));
+    memmove(out->bg, out->bg + drop, left * sizeof(uint32_t));
+    out->len = left;
     out->pos = out->pos > drop ? out->pos - drop : 0;
     out->saved_pos = out->saved_pos > drop ? out->saved_pos - drop : 0;
 }
@@ -231,6 +297,11 @@ static void output_append(OutputBuffer *out, const char *s)
     if (n >= OUTPUT_MAX - 1)
     {
         memcpy(out->data, s + n - (OUTPUT_MAX - 1), OUTPUT_MAX - 1);
+        for (size_t i = 0; i < OUTPUT_MAX - 1; i++)
+        {
+            out->fg[i] = ANSI_DEFAULT_FG;
+            out->bg[i] = ANSI_DEFAULT_BG;
+        }
         out->len = OUTPUT_MAX - 1;
         out->pos = out->len;
         out->data[out->len] = '\0';
@@ -239,6 +310,11 @@ static void output_append(OutputBuffer *out, const char *s)
     if (out->len + n > OUTPUT_MAX - 1)
         output_drop_front(out, out->len + n - (OUTPUT_MAX - 1));
     memcpy(out->data + out->len, s, n);
+    for (size_t i = 0; i < n; i++)
+    {
+        out->fg[out->len + i] = ANSI_DEFAULT_FG;
+        out->bg[out->len + i] = ANSI_DEFAULT_BG;
+    }
     out->len += n;
     out->pos = out->len;
     out->data[out->len] = '\0';
@@ -254,7 +330,11 @@ static void output_putc(OutputBuffer *out, char c)
         if (out->len >= OUTPUT_MAX - 1)
             output_drop_front(out, out->len - (OUTPUT_MAX - 2));
         memmove(out->data + out->pos + 1, out->data + out->pos, out->len - out->pos + 1);
+        memmove(out->fg + out->pos + 1, out->fg + out->pos, (out->len - out->pos) * sizeof(uint32_t));
+        memmove(out->bg + out->pos + 1, out->bg + out->pos, (out->len - out->pos) * sizeof(uint32_t));
         out->data[out->pos] = c;
+        out->fg[out->pos] = out->fg_color;
+        out->bg[out->pos] = out->bg_color;
         out->len++;
         out->pos++;
         out->data[out->len] = '\0';
@@ -262,7 +342,10 @@ static void output_putc(OutputBuffer *out, char c)
     }
     if (out->pos >= OUTPUT_MAX - 1)
         output_drop_front(out, out->pos - (OUTPUT_MAX - 2));
-    out->data[out->pos++] = c;
+    out->data[out->pos] = c;
+    out->fg[out->pos] = out->fg_color;
+    out->bg[out->pos] = out->bg_color;
+    out->pos++;
     if (out->pos > out->len)
         out->len = out->pos;
     out->data[out->len] = '\0';
@@ -323,7 +406,11 @@ static void output_erase_line(OutputBuffer *out, int mode)
     else if (mode != 2)
         return;
     for (size_t i = from; i < to; i++)
+    {
         out->data[i] = ' ';
+        out->fg[i] = ANSI_DEFAULT_FG;
+        out->bg[i] = out->bg_color;
+    }
 }
 
 static void output_erase_display(OutputBuffer *out, int mode)
@@ -339,8 +426,14 @@ static void output_erase_display(OutputBuffer *out, int mode)
     else if (mode == 1)
     {
         for (size_t i = 0; i < out->pos && i < out->len; i++)
+        {
             if (out->data[i] != '\n')
+            {
                 out->data[i] = ' ';
+                out->fg[i] = ANSI_DEFAULT_FG;
+                out->bg[i] = out->bg_color;
+            }
+        }
     }
     else if (mode == 2 || mode == 3)
     {
@@ -454,6 +547,89 @@ static int ansi_param(const char *params, size_t n, int index, int fallback)
     return fallback;
 }
 
+/*split an SGR parameter list into numbers*/
+static size_t ansi_collect(const char *params, size_t n, int *values, size_t max)
+{
+    size_t count = 0;
+    int value = 0;
+    bool seen = false;
+    for (size_t i = 0; i <= n; i++)
+    {
+        char c = i < n ? params[i] : ';';
+        if (c >= '0' && c <= '9')
+        {
+            value = value * 10 + (c - '0');
+            seen = true;
+        }
+        else if (c == ';')
+        {
+            if (count < max)
+                values[count++] = seen ? value : 0;
+            value = 0;
+            seen = false;
+        }
+    }
+    return count;
+}
+
+/*apply colors from a Select Graphic Rendition sequence*/
+static void ansi_sgr(OutputBuffer *out, const char *params, size_t n)
+{
+    int values[32];
+    size_t count = ansi_collect(params, n, values, 32);
+    if (count == 0)
+    {
+        out->fg_color = ANSI_DEFAULT_FG;
+        out->bg_color = ANSI_DEFAULT_BG;
+        return;
+    }
+    for (size_t i = 0; i < count; i++)
+    {
+        int v = values[i];
+        if (v == 0)
+        {
+            out->fg_color = ANSI_DEFAULT_FG;
+            out->bg_color = ANSI_DEFAULT_BG;
+        }
+        else if (v >= 30 && v <= 37)
+            out->fg_color = ansi_palette_color(v - 30);
+        else if (v == 39)
+            out->fg_color = ANSI_DEFAULT_FG;
+        else if (v >= 40 && v <= 47)
+            out->bg_color = ansi_palette_color(v - 40);
+        else if (v == 49)
+            out->bg_color = ANSI_DEFAULT_BG;
+        else if (v >= 90 && v <= 97)
+            out->fg_color = ansi_palette_color(v - 90 + 8);
+        else if (v >= 100 && v <= 107)
+            out->bg_color = ansi_palette_color(v - 100 + 8);
+        else if ((v == 38 || v == 48) && i + 1 < count)
+        {
+            uint32_t color = ANSI_DEFAULT_FG;
+            bool have_color = false;
+            if (values[i + 1] == 5 && i + 2 < count)
+            {
+                color = ansi_256_color(values[i + 2]);
+                i += 2;
+                have_color = true;
+            }
+            else if (values[i + 1] == 2 && i + 4 < count)
+            {
+                color = ansi_rgb_color(values[i + 2], values[i + 3], values[i + 4]);
+                i += 4;
+                have_color = true;
+            }
+            if (have_color)
+            {
+                if (v == 38)
+                    out->fg_color = color;
+                else
+                    out->bg_color = color;
+            }
+        }
+    }
+}
+
 static void ansi_csi(OutputBuffer *out, const char *params, size_t n, char final)
 {
     int one = ansi_param(params, n, 0, 0);
@@ -504,8 +680,11 @@ static void ansi_csi(OutputBuffer *out, const char *params, size_t n, char final
     case 'u':
         out->pos = out->saved_pos;
         break;
+    case 'm':
+        ansi_sgr(out, params, n);
+        break;
     default:
-        /*colors (m), modes (h/l) and everything else are ignored for now*/
+        /*modes (h/l) and everything else are ignored for now*/
         break;
     }
 }
@@ -606,6 +785,106 @@ static void output_feed(OutputBuffer *out, const char *s, size_t n)
     }
 }
 
+/*count how many wrapped rows the output needs*/
+static int output_row_count(const OutputBuffer *out, int columns)
+{
+    int rows = 0;
+    for (size_t start = 0; start < out->len;)
+    {
+        size_t end = output_line_end(out, start);
+        int cells = 0;
+        for (size_t p = start; p < end; p = utf8_next(out->data, end, p))
+            cells++;
+        rows += cells == 0 ? 1 : (cells + columns - 1) / columns;
+        if (end >= out->len)
+            break;
+        start = end + 1;
+    }
+    return rows;
+}
+
+/*draw colored, wrapped output and return the y position after it*/
+static int output_render(SDL_Renderer *renderer, TTF_Font *font, OutputBuffer *out, int win_w, int win_h,
+                         int margin, int line_skip)
+{
+    int cell_w = 0, cell_h = 0;
+    if (TTF_SizeText(font, "M", &cell_w, &cell_h) != 0 || cell_w <= 0)
+        cell_w = 8;
+    int columns = (win_w - 2 * margin) / cell_w;
+    if (columns < 1)
+        columns = 1;
+    int max_rows = (win_h - line_skip - 2 * margin) / line_skip;
+    if (max_rows < 0)
+        max_rows = 0;
+    int total_rows = output_row_count(out, columns);
+    int first_row = total_rows > max_rows ? total_rows - max_rows : 0;
+    int row = 0;
+    int drawn = 0;
+    for (size_t start = 0; start < out->len;)
+    {
+        size_t end = output_line_end(out, start);
+        size_t p = start;
+        do
+        {
+            size_t row_start = p;
+            int cells = 0;
+            while (p < end && cells < columns)
+            {
+                p = utf8_next(out->data, end, p);
+                cells++;
+            }
+            if (row >= first_row && drawn < max_rows)
+            {
+                int y = margin + drawn * line_skip;
+                int col = 0;
+                size_t q = row_start;
+                while (q < p)
+                {
+                    uint32_t fg = out->fg[q];
+                    uint32_t bg = out->bg[q];
+                    size_t run_end = utf8_next(out->data, p, q);
+                    while (run_end < p && out->fg[run_end] == fg && out->bg[run_end] == bg)
+                        run_end = utf8_next(out->data, p, run_end);
+                    int run_cells = 0;
+                    for (size_t t = q; t < run_end; t = utf8_next(out->data, run_end, t))
+                        run_cells++;
+                    if (bg != ANSI_DEFAULT_BG)
+                    {
+                        SDL_Color back = output_color(bg);
+                        SDL_Rect rect = {margin + col * cell_w, y, run_cells * cell_w, line_skip};
+                        SDL_SetRenderDrawColor(renderer, back.r, back.g, back.b, 255);
+                        SDL_RenderFillRect(renderer, &rect);
+                    }
+                    char saved = out->data[run_end];
+                    out->data[run_end] = '\0';
+                    SDL_Color color = output_color(fg);
+                    SDL_Surface *text = TTF_RenderUTF8_Blended(font, out->data + q, color);
+                    out->data[run_end] = saved;
+                    if (text)
+                    {
+                        SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
+                        if (texture)
+                        {
+                            SDL_Rect dst = {margin + col * cell_w, y, text->w, text->h};
+                            SDL_RenderCopy(renderer, texture, NULL, &dst);
+                            SDL_DestroyTexture(texture);
+                        }
+                        SDL_FreeSurface(text);
+                    }
+                    col += run_cells;
+                    q = run_end;
+                }
+                drawn++;
+            }
+            row++;
+        } while (p < end);
+        if (end >= out->len)
+            break;
+        start = end + 1;
+    }
+    return margin + drawn * line_skip;
+}
+
 /*run a command with bash and capture stdout+stderr*/
 static int run_command(const char *cmd, char *out, size_t outsz)
 {
@@ -694,7 +973,7 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
     char buffer[INPUT_MAX] = "";
     size_t len = 0;
     size_t cursor = 0; /*byte offset into buffer*/
-    static OutputBuffer output;
+    static OutputBuffer output = {.fg_color = ANSI_DEFAULT_FG, .bg_color = ANSI_DEFAULT_BG};
     /*first of all let me get my PS1*/
     const char *raw_ps1 = getenv("PS1");
     if (!raw_ps1)
@@ -770,7 +1049,11 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
                         output_append(&output, "\n");
                         static char result[OUTPUT_MAX];
                         run_command(cmd, result, sizeof result);
+                        output.fg_color = ANSI_DEFAULT_FG;
+                        output.bg_color = ANSI_DEFAULT_BG;
                         output_feed(&output, result, strlen(result));
+                        output.fg_color = ANSI_DEFAULT_FG;
+                        output.bg_color = ANSI_DEFAULT_BG;
                         if (output.len > 0 && output.data[output.len - 1] != '\n')
                             output_append(&output, "\n");
                     }
@@ -788,34 +1071,8 @@ int main([[maybe_unused]]int argc, [[maybe_unused]]char *argv[])
         int margin = 8;
         int win_w = 0, win_h = 0;
         SDL_GetWindowSize(window, &win_w, &win_h);
-        /*draw the command output from the top, keeping the newest lines visible*/
-        int input_y = margin;
-        if (output.len > 0)
-        {
-            SDL_Surface *text = TTF_RenderUTF8_Blended_Wrapped(font, output.data, white, win_w - 2 * margin);
-            if (text)
-            {
-                SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, text);
-                if (texture)
-                {
-                    int avail = win_h - line_skip - 2 * margin;
-                    if (avail < 0)
-                        avail = 0;
-                    SDL_Rect src = {0, 0, text->w, text->h};
-                    SDL_Rect dst = {margin, margin, text->w, text->h};
-                    if (text->h > avail)
-                    {
-                        src.y = text->h - avail;
-                        src.h = avail;
-                        dst.h = avail;
-                    }
-                    SDL_RenderCopy(renderer, texture, &src, &dst);
-                    input_y = dst.y + dst.h;
-                    SDL_DestroyTexture(texture);
-                }
-                SDL_FreeSurface(text);
-            }
-        }
+        /*draw the colored command output from the top, keeping the newest lines visible*/
+        int input_y = output_render(renderer, font, &output, win_w, win_h, margin, line_skip);
         /*current input line flows right after the output*/
         char line[INPUT_MAX + 512];
         snprintf(line, sizeof(line), "%s%s", ps1, buffer);
