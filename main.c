@@ -21,7 +21,7 @@
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 #define WINDOW_DELAY 3000
-#define FONT_PATH "/usr/share/fonts/jetbrains-mono/JetBrainsMonoNL-Medium.ttf"
+#define FONT_PATH "/usr/share/fonts/jetbrains-mono/JetBrainsMonoNL-Medium.ttf" /*can change this*/
 #define FONT_SIZE 14
 #define INPUT_MAX 1024
 #define OUTPUT_MAX 65536
